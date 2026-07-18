@@ -2,67 +2,101 @@ import Foundation
 
 @MainActor
 final class LightItUpVM: ObservableObject {
-    enum Phase: Equatable {
-        case ready
-        case showing
-        case choosing
-    }
-
     @Published private(set) var score = 0
-    @Published private(set) var round = 0
-    @Published private(set) var phase: Phase = .ready
+    @Published private(set) var level = 1
+    @Published private(set) var lives = 3
+    @Published private(set) var timeRemaining = 30
     @Published private(set) var highlightedTile: Int?
+    @Published private(set) var isRunning = false
     @Published private(set) var finalScore: Int?
 
-    private var targetTile = 0
-    private var roundTask: Task<Void, Never>?
+    private var correctTapsThisLevel = 0
+    private var timer: Timer?
+    private var nextTileTask: Task<Void, Never>?
 
     deinit {
-        roundTask?.cancel()
+        timer?.invalidate()
+        nextTileTask?.cancel()
     }
 
     func start() {
-        roundTask?.cancel()
+        timer?.invalidate()
+        nextTileTask?.cancel()
         score = 0
-        round = 0
+        level = 1
+        lives = 3
+        timeRemaining = 30
+        correctTapsThisLevel = 0
         finalScore = nil
-        beginRound()
-    }
+        isRunning = true
+        showNextTile()
 
-    func choose(tile: Int) {
-        guard phase == .choosing, finalScore == nil else { return }
-
-        if tile == targetTile {
-            score += 10
-            round += 1
-            highlightedTile = tile
-            phase = .showing
-            roundTask = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(260))
-                guard !Task.isCancelled else { return }
-                self?.beginRound()
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.tick()
             }
-        } else {
-            finalScore = score
         }
     }
 
-    private func beginRound() {
-        targetTile = Int.random(in: 0..<3)
-        highlightedTile = nil
-        phase = .showing
+    func startIfNeeded() {
+        guard !isRunning, finalScore == nil else { return }
+        start()
+    }
 
-        roundTask?.cancel()
-        roundTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(420))
-            guard let self, !Task.isCancelled else { return }
+    func tap(tile: Int) {
+        guard isRunning, finalScore == nil else { return }
 
-            self.highlightedTile = self.targetTile
-            try? await Task.sleep(for: .milliseconds(700))
-            guard !Task.isCancelled else { return }
-
-            self.highlightedTile = nil
-            self.phase = .choosing
+        guard tile == highlightedTile else {
+            lives -= 1
+            if lives == 0 {
+                finish()
+            }
+            return
         }
+
+        score += 10 * level
+        correctTapsThisLevel += 1
+        highlightedTile = nil
+
+        if correctTapsThisLevel == 5 {
+            level += 1
+            correctTapsThisLevel = 0
+            timeRemaining = max(12, 30 - (level - 1) * 2)
+        }
+
+        nextTileTask?.cancel()
+        nextTileTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(260))
+            guard !Task.isCancelled else { return }
+            self?.showNextTile()
+        }
+    }
+
+    private func showNextTile() {
+        guard isRunning else { return }
+        var next = Int.random(in: 0..<6)
+        if let highlightedTile, next == highlightedTile {
+            next = (next + Int.random(in: 1..<6)) % 6
+        }
+        highlightedTile = next
+    }
+
+    private func tick() {
+        guard isRunning else { return }
+        if timeRemaining > 1 {
+            timeRemaining -= 1
+        } else {
+            timeRemaining = 0
+            finish()
+        }
+    }
+
+    private func finish() {
+        timer?.invalidate()
+        timer = nil
+        nextTileTask?.cancel()
+        highlightedTile = nil
+        isRunning = false
+        finalScore = score
     }
 }
